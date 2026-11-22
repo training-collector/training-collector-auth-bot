@@ -62,8 +62,6 @@ class AuthBot(private val platform: AuthPlatform, private val token: String) {
     }
 }
 
-fun authBotToken(): String? = ConfigFactory.load("auth-bot").getString("app.authBot.token").trim().ifEmpty { null }
-
 suspend fun pollAuthBot(token: String, platform: AuthPlatform): Unit = coroutineScope {
     val handler = AuthBot(platform, token)
     val (bot, polling) = telegramBotWithBehaviourAndLongPolling(token, scope = this) { handler.install(this) }
@@ -84,8 +82,9 @@ suspend fun pollAuthBot(token: String, platform: AuthPlatform): Unit = coroutine
 }
 
 fun main() {
-    val token = requireNotNull(authBotToken()) { "Задайте AUTH_BOT_TOKEN." }
-    val config = ConfigFactory.load("auth-bot").getConfig("app.platform")
-    val platform = AuthPlatform(config.getString("url"), config.getString("key"))
+    val config = ConfigFactory.load("auth-bot").getConfig("app")
+    val token = config.getString("authBot.token").trim()
+    require(token.isNotEmpty()) { "Задайте AUTH_BOT_TOKEN." }
+    val platform = AuthPlatform(config.getString("platform.url"), config.getString("platform.key"))
     runBlocking { pollAuthBot(token, platform) }
 }

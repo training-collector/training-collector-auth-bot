@@ -11,19 +11,19 @@ class AuthPlatform(url: String, key: String) {
     suspend fun keepRegistered(scope: CoroutineScope, username: String) = http.keepRegistered(scope, username)
 
     suspend fun confirmSignup(token: String, sender: Long) =
-        http.call<Map<String, SignupConfirmation>>("POST", "/signup", mapOf("token" to token, "sender" to sender)).getValue("status")
+        http.post<Map<String, SignupConfirmation>>("/signup", mapOf("token" to token, "sender" to sender)).getValue("status")
 
     suspend fun activateChat(sender: Long) =
-        http.call<Map<String, Boolean>>("POST", "/chats/$sender/activate").getValue("active")
+        http.post<Map<String, Boolean>>("/chats/$sender/activate").getValue("active")
 
-    suspend fun nextDelivery() = http.call<CodeDelivery?>("POST", "/deliveries/next")
+    suspend fun nextDelivery() = http.post<CodeDelivery?>("/deliveries/next")
 
     suspend fun prepareDelivery(challenge: String, code: String) =
-        http.call<Map<String, Boolean>>("POST", "/deliveries/prepare", mapOf("challenge" to challenge, "code" to code)).getValue("ready")
+        http.post<Map<String, Boolean>>("/deliveries/prepare", mapOf("challenge" to challenge, "code" to code)).getValue("ready")
 
     suspend fun markHeadingSent(challenge: String) =
-        http.call<Unit>("POST", "/deliveries/heading", mapOf("challenge" to challenge))
+        http.post<Unit>("/deliveries/heading", mapOf("challenge" to challenge))
 
     suspend fun delivered(challenge: String) =
-        http.call<Unit>("POST", "/deliveries/complete", mapOf("challenge" to challenge))
+        http.post<Unit>("/deliveries/complete", mapOf("challenge" to challenge))
 }

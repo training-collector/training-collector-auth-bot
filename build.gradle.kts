@@ -9,8 +9,6 @@ repositories { mavenCentral() }
 kotlin { jvmToolchain(25) }
 application { mainClass.set("com.tc.gymtrainer.authbot.AuthBotKt") }
 
-tasks.test { useJUnitPlatform() }
-
 tasks.named<JavaExec>("run") {
     val localConfig = layout.projectDirectory.file(".env").asFile
     doFirst {
@@ -23,11 +21,7 @@ tasks.named<JavaExec>("run") {
 }
 
 dependencies {
-    testImplementation(platform("org.junit:junit-bom:5.11.4"))
-    testImplementation("org.junit.jupiter:junit-jupiter")
-    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.18.2")
-    implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.18.2")
     implementation("ch.qos.logback:logback-classic:1.5.18")
     implementation("com.typesafe:config:1.4.3")
     implementation("dev.inmo:tgbotapi:24.0.2")
