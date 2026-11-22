@@ -28,6 +28,7 @@ class AuthBot(private val platform: AuthPlatform, private val token: String) {
             if (payload.isNotEmpty() && payload != "login") {
                 try {
                     when (platform.confirmSignup(payload, sender.chatId.long)) {
+                        SignupConfirmation.PENDING_APPROVAL -> sendTextMessage(message.chat, "Telegram привязан. Ожидайте подтверждения администратора. После одобрения сюда придёт код для первого входа.")
                         SignupConfirmation.LINKED -> Unit // The worker delivers the requested code.
                         SignupConfirmation.ALREADY_LINKED -> sendTextMessage(message.chat, "Telegram уже привязан. Введите полученный код на сайте или нажмите «Запросить код повторно».")
                         SignupConfirmation.TELEGRAM_IN_USE -> sendTextMessage(message.chat, "Этот аккаунт Telegram уже зарегистрирован. На сайте нажмите «Перейти ко входу» и введите Username существующего аккаунта.")
@@ -38,7 +39,9 @@ class AuthBot(private val platform: AuthPlatform, private val token: String) {
                 return@onCommand
             }
             val ready = platform.activateChat(sender.chatId.long)
-            sendTextMessage(message.chat, if (ready) "Бот для входа подключён. Запрошенный на сайте код придёт сюда."
+            sendTextMessage(message.chat, if (ready.deactivated) "Аккаунт деактивирован. Выдача кодов отключена."
+                else if (ready.pending) "Заявка ожидает подтверждения администратора. Код придёт сюда после одобрения."
+                else if (ready.active) "Бот для входа подключён. Запрошенный на сайте код придёт сюда."
                 else "Откройте сайт и нажмите «Открыть бота авторизации» на странице регистрации.")
         }
     }

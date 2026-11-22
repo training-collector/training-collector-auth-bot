@@ -2,8 +2,10 @@ package com.tc.gymtrainer.authbot.platform
 
 import kotlinx.coroutines.CoroutineScope
 
-enum class SignupConfirmation { LINKED, ALREADY_LINKED, TELEGRAM_IN_USE }
+enum class SignupConfirmation { LINKED, PENDING_APPROVAL, ALREADY_LINKED, TELEGRAM_IN_USE }
 data class CodeDelivery(val challenge: String, val telegramId: Long, val headingSent: Boolean)
+
+data class ChatStatus(val active: Boolean, val pending: Boolean = false, val deactivated: Boolean = false)
 
 class AuthPlatform(url: String, key: String) {
     private val http = PlatformHttp(url, key)
@@ -14,7 +16,7 @@ class AuthPlatform(url: String, key: String) {
         http.post<Map<String, SignupConfirmation>>("/signup", mapOf("token" to token, "sender" to sender)).getValue("status")
 
     suspend fun activateChat(sender: Long) =
-        http.post<Map<String, Boolean>>("/chats/$sender/activate").getValue("active")
+        http.post<ChatStatus>("/chats/$sender/activate")
 
     suspend fun nextDelivery() = http.post<CodeDelivery?>("/deliveries/next")
 
