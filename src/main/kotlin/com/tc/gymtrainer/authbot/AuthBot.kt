@@ -1,6 +1,11 @@
 package com.tc.gymtrainer.authbot
 
 import com.tc.gymtrainer.authbot.platform.*
+import dev.inmo.tgbotapi.bot.exceptions.RequestException
+import dev.inmo.tgbotapi.types.message.abstracts.CommonMessage
+import dev.inmo.tgbotapi.types.message.content.TextContent
+import dev.inmo.tgbotapi.types.update.MessageUpdate
+import dev.inmo.tgbotapi.types.update.abstracts.Update
 import com.typesafe.config.ConfigFactory
 import dev.inmo.kslog.common.KSLog
 import dev.inmo.kslog.common.LogLevel
@@ -27,21 +32,49 @@ class AuthBot(private val platform: AuthPlatform, private val token: String) {
             val sender = (message as? FromUserMessage)?.from?.id ?: return@onCommand
             if (message.chat !is PrivateChat || message.chat.id != sender) return@onCommand
             val payload = message.content.text.substringAfter(' ', "").trim()
-            if (payload.isNotEmpty() && payload != "login") {
-                try {
-                    when (platform.confirmSignup(payload, sender.chatId.long)) {
-                        SignupConfirmation.PENDING_APPROVAL -> sendTextMessage(message.chat, statusMessage(platform.activateChat(sender.chatId.long)))
-                        SignupConfirmation.LINKED -> Unit // The worker delivers the requested code.
-                        SignupConfirmation.ALREADY_LINKED -> sendTextMessage(message.chat, "Telegram уже привязан. Введите полученный код на сайте или нажмите «Запросить код повторно».")
-                        SignupConfirmation.TELEGRAM_IN_USE -> sendTextMessage(message.chat, "Этот аккаунт Telegram уже зарегистрирован. На сайте нажмите «Перейти ко входу» и введите Username существующего аккаунта.")
-                    }
-                } catch (e: ServiceException) {
-                    sendTextMessage(message.chat, e.message.orEmpty())
-                }
-                return@onCommand
-            }
-            sendTextMessage(message.chat, statusMessage(platform.activateChat(sender.chatId.long)))
+            start(this, sender.chatId.long, payload)
         }
+    }
+
+    private suspend fun start(bot: TelegramBot, sender: Long, payload: String) {
+        if (payload.isNotEmpty() && payload != "login") {
+            try {
+                when (platform.confirmSignup(payload, sender)) {
+                    SignupConfirmation.PENDING_APPROVAL -> bot.sendTextMessage(sender.toChatId(), statusMessage(platform.activateChat(sender)))
+                    SignupConfirmation.LINKED -> Unit // The worker delivers the requested code.
+                    SignupConfirmation.ALREADY_LINKED -> bot.sendTextMessage(sender.toChatId(), "Telegram уже привязан. Введите полученный код на сайте или нажмите «Запросить код повторно».")
+                    SignupConfirmation.TELEGRAM_IN_USE -> bot.sendTextMessage(sender.toChatId(), "Этот аккаунт Telegram уже зарегистрирован. На сайте нажмите «Перейти ко входу» и введите Username существующего аккаунта.")
+                }
+            } catch (e: ServiceException) {
+                bot.sendTextMessage(sender.toChatId(), e.message.orEmpty())
+            }
+            return
+        }
+        bot.sendTextMessage(sender.toChatId(), statusMessage(platform.activateChat(sender)))
+    }
+
+    suspend fun webhook(bot: TelegramBot, update: Update, username: String) {
+        val message = (update as? MessageUpdate)?.data as? CommonMessage<*> ?: return
+        val sender = (message as? FromUserMessage)?.from?.id ?: return
+        if (message.chat !is PrivateChat || message.chat.id != sender) return
+        val text = (message.content as? TextContent)?.text ?: return
+        val command = text.substringBefore(' ')
+        if (command != "/start" && !command.equals("/start@$username", true)) return
+        val id = update.updateId.long
+        val claim = platform.begin(sender.chatId.long, id)
+        if (claim.status == "done") return
+        check(claim.status == "claimed")
+        start(bot, sender.chatId.long, text.substringAfter(' ', "").trim())
+        platform.finish(sender.chatId.long, id, requireNotNull(claim.lease))
+    }
+
+    suspend fun drain(bot: TelegramBot): Long? {
+        repeat(12) {
+            val notified = deliverNextNotification(bot)
+            val sent = deliverNext(bot)
+            if (!sent && !notified) return platform.nextDelay()
+        }
+        return platform.nextDelay()
     }
 
     private fun statusMessage(status: ChatStatus): String = when {
@@ -77,7 +110,12 @@ class AuthBot(private val platform: AuthPlatform, private val token: String) {
         val notice = platform.nextNotification() ?: return false
         val text = if (notice.active) "Аккаунт ${notice.username} активирован. Доступ к кабинету открыт."
             else "Аккаунт ${notice.username} деактивирован. Доступ к кабинету закрыт."
-        bot.sendTextMessage(notice.telegramId.toChatId(), text)
+        try {
+            bot.sendTextMessage(notice.telegramId.toChatId(), text)
+        } catch (e: RequestException) {
+            // A blocked bot cannot reach this chat. Do not schedule this notice forever.
+            if (e.response.errorCode != 403) throw e
+        }
         platform.acknowledgeNotification(notice.id)
         return true
     }
@@ -122,5 +160,16 @@ fun main() {
     require(token.isNotEmpty()) { "Задайте AUTH_BOT_TOKEN." }
     val platform = AuthPlatform(config.getString("platform.url"), config.getString("platform.key"))
     KSLog.default = telegramSdkLogger(KSLog.default)
-    runBlocking { pollAuthBot(token, platform) }
+    when ((System.getenv("BOT_MODE") ?: "POLLING").uppercase()) {
+        "POLLING" -> runBlocking { pollAuthBot(token, platform) }
+        "WEBHOOK" -> {
+            val bot = dev.inmo.tgbotapi.bot.ktor.telegramBot(token)
+            val handler = AuthBot(platform, token)
+            val username = requireNotNull(System.getenv("BOT_USERNAME")) { "Set BOT_USERNAME" }.removePrefix("@")
+            webhookServer((System.getenv("PORT") ?: "8080").toInt(), System.getenv("TELEGRAM_WEBHOOK_SECRET").orEmpty(),
+                { handler.webhook(bot, it, username) }, config.getString("platform.key"),
+                { """{"delaySeconds":${handler.drain(bot)}}""" }).start()
+        }
+        else -> error("BOT_MODE must be POLLING or WEBHOOK")
+    }
 }

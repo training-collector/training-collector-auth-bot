@@ -19,6 +19,12 @@ class AuthPlatform(url: String, key: String) {
     suspend fun activateChat(sender: Long) =
         http.post<ChatStatus>("/chats/$sender/activate")
 
+    data class Lease(val status: String, val lease: String?)
+    suspend fun begin(sender: Long, update: Long) = http.post<Lease>("/updates/$sender/$update/begin")
+    suspend fun finish(sender: Long, update: Long, lease: String) =
+        http.post<Unit>("/updates/$sender/$update/finish", mapOf("lease" to lease))
+    suspend fun nextDelay() = http.post<Map<String, Long?>>("/deliveries/delay")["seconds"]
+
     suspend fun nextDelivery() = http.post<CodeDelivery?>("/deliveries/next")
     suspend fun nextNotification() = http.post<AccessNotification?>("/notifications/next")
     suspend fun acknowledgeNotification(id: Long) = http.post<Unit>("/notifications/$id/complete")
