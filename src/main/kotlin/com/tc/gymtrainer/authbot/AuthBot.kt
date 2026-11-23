@@ -2,6 +2,8 @@ package com.tc.gymtrainer.authbot
 
 import com.tc.gymtrainer.authbot.platform.*
 import com.typesafe.config.ConfigFactory
+import dev.inmo.kslog.common.KSLog
+import dev.inmo.kslog.common.LogLevel
 import dev.inmo.tgbotapi.bot.TelegramBot
 import dev.inmo.tgbotapi.extensions.api.bot.getMe
 import dev.inmo.tgbotapi.extensions.api.send.sendTextMessage
@@ -28,7 +30,7 @@ class AuthBot(private val platform: AuthPlatform, private val token: String) {
             if (payload.isNotEmpty() && payload != "login") {
                 try {
                     when (platform.confirmSignup(payload, sender.chatId.long)) {
-                        SignupConfirmation.PENDING_APPROVAL -> sendTextMessage(message.chat, "Telegram привязан. Ожидайте подтверждения администратора. После одобрения сюда придёт код для первого входа.")
+                        SignupConfirmation.PENDING_APPROVAL -> sendTextMessage(message.chat, statusMessage(platform.activateChat(sender.chatId.long)))
                         SignupConfirmation.LINKED -> Unit // The worker delivers the requested code.
                         SignupConfirmation.ALREADY_LINKED -> sendTextMessage(message.chat, "Telegram уже привязан. Введите полученный код на сайте или нажмите «Запросить код повторно».")
                         SignupConfirmation.TELEGRAM_IN_USE -> sendTextMessage(message.chat, "Этот аккаунт Telegram уже зарегистрирован. На сайте нажмите «Перейти ко входу» и введите Username существующего аккаунта.")
@@ -38,12 +40,19 @@ class AuthBot(private val platform: AuthPlatform, private val token: String) {
                 }
                 return@onCommand
             }
-            val ready = platform.activateChat(sender.chatId.long)
-            sendTextMessage(message.chat, if (ready.deactivated) "Аккаунт деактивирован. Выдача кодов отключена."
-                else if (ready.pending) "Заявка ожидает подтверждения администратора. Код придёт сюда после одобрения."
-                else if (ready.active) "Бот для входа подключён. Запрошенный на сайте код придёт сюда."
-                else "Откройте сайт и нажмите «Открыть бота авторизации» на странице регистрации.")
+            sendTextMessage(message.chat, statusMessage(platform.activateChat(sender.chatId.long)))
         }
+    }
+
+    private fun statusMessage(status: ChatStatus): String = when {
+        status.deactivated -> "Аккаунт деактивирован. Доступ к кабинету закрыт."
+        status.pending -> listOfNotNull(
+            "Telegram привязан. Заявка ожидает подтверждения администратора.",
+            status.username?.let { "Логин для входа: $it" },
+            "После одобрения сюда придёт код для первого входа."
+        ).joinToString("\n\n")
+        status.active -> "Бот для входа подключён. Запрошенный на сайте код придёт сюда."
+        else -> "Откройте сайт и нажмите «Открыть бота авторизации» на странице регистрации."
     }
 
     suspend fun deliverNext(bot: TelegramBot): Boolean {
@@ -63,6 +72,24 @@ class AuthBot(private val platform: AuthPlatform, private val token: String) {
         }
         return true
     }
+
+    suspend fun deliverNextNotification(bot: TelegramBot): Boolean {
+        val notice = platform.nextNotification() ?: return false
+        val text = if (notice.active) "Аккаунт ${notice.username} активирован. Доступ к кабинету открыт."
+            else "Аккаунт ${notice.username} деактивирован. Доступ к кабинету закрыт."
+        bot.sendTextMessage(notice.telegramId.toChatId(), text)
+        platform.acknowledgeNotification(notice.id)
+        return true
+    }
+}
+
+internal fun telegramSdkLogger(delegate: KSLog): KSLog = KSLog { level, tag, message, cause ->
+    // The SDK logs normal cancellation of update subscriptions as an error.
+    val cancelledSubscription = level == LogLevel.ERROR && message == "Something web wrong" &&
+        cause is CancellationException && generateSequence<Throwable>(cause) { it.cause }.all {
+            it is CancellationException && it !is TimeoutCancellationException
+        }
+    if (!cancelledSubscription) delegate.performLog(level, tag, message, cause)
 }
 
 suspend fun pollAuthBot(token: String, platform: AuthPlatform): Unit = coroutineScope {
@@ -70,15 +97,20 @@ suspend fun pollAuthBot(token: String, platform: AuthPlatform): Unit = coroutine
     val (bot, polling) = telegramBotWithBehaviourAndLongPolling(token, scope = this) { handler.install(this) }
     val worker = launch {
         val log = LoggerFactory.getLogger(AuthBot::class.java)
-        while (isActive) {
+        suspend fun attempt(label: String, deliver: suspend () -> Boolean): Boolean {
             try {
-                if (!handler.deliverNext(bot)) delay(1000)
+                return deliver()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                log.warn("Ошибка доставки кода ({}). Повтор будет выполнен позже.", e.javaClass.simpleName)
-                delay(1500)
+                log.warn("Ошибка доставки {} ({}). Повтор будет выполнен позже.", label, e.javaClass.simpleName)
+                return false
             }
+        }
+        while (isActive) {
+            val notified = attempt("уведомления") { handler.deliverNextNotification(bot) }
+            val sent = attempt("кода") { handler.deliverNext(bot) }
+            if (!notified && !sent) delay(1000)
         }
     }
     try { polling.join() } finally { worker.cancelAndJoin() }
@@ -89,5 +121,6 @@ fun main() {
     val token = config.getString("authBot.token").trim()
     require(token.isNotEmpty()) { "Задайте AUTH_BOT_TOKEN." }
     val platform = AuthPlatform(config.getString("platform.url"), config.getString("platform.key"))
+    KSLog.default = telegramSdkLogger(KSLog.default)
     runBlocking { pollAuthBot(token, platform) }
 }
